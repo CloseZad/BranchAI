@@ -46,6 +46,7 @@ type ChatResponse = {
 
 const starterPrompt =
   'Ask Gemini something. Each turn sends the prior conversation back as context.'
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? ''
 
 function makeId() {
   return crypto.randomUUID()
@@ -72,7 +73,7 @@ function App() {
   const visibleHistory = useMemo(() => toChatHistory(messages), [messages])
 
   async function requestGemini(message: string, history: ReturnType<typeof toChatHistory>) {
-    const response = await fetch('/api/chat', {
+    const response = await fetch(`${apiBaseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message, history }),
