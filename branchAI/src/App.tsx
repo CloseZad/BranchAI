@@ -15,6 +15,7 @@ type Branch = {
   sourceMessageId: string;
   sourceText: string;
   anchor: Point;
+  anchorSource: "selection" | "message";
   position: Point;
   messages: Message[];
   draft: string;
@@ -26,6 +27,7 @@ type BranchTarget = {
   messageId: string;
   text: string;
   sourceRect: DOMRect;
+  selectionRect: DOMRect;
 };
 
 type ContextMenu = {
@@ -48,6 +50,8 @@ const starterPrompt = "Ask Gemini something.";
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "";
 const chatApiUrl =
   import.meta.env.VITE_CHAT_API_URL ?? `${apiBaseUrl}/api/chat`;
+const branchCardViewportOffset = 18;
+const branchCardMaxVisibleHeight = 520;
 
 function makeId() {
   return crypto.randomUUID();
@@ -58,6 +62,10 @@ function toChatHistory(messages: Message[]) {
     role: message.role,
     text: message.text,
   }));
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
 }
 
 function App() {
@@ -115,6 +123,10 @@ function App() {
       let changed = false;
 
       const nextBranches = current.map((branch) => {
+        if (branch.anchorSource === "selection") {
+          return branch;
+        }
+
         const anchor = measureMessageAnchor(branch.sourceMessageId);
         if (
           !anchor ||
@@ -338,18 +350,31 @@ function App() {
 
     const workspace = workspaceRef.current;
     const workspaceRect = workspace.getBoundingClientRect();
-    const sourceRect = contextMenu.target.sourceRect;
-    const anchor = measureMessageAnchor(contextMenu.target.messageId) ?? {
-      x: sourceRect.right - workspaceRect.left + workspace.scrollLeft,
+    const selectionRect = contextMenu.target.selectionRect;
+    const anchor = {
+      x: selectionRect.right - workspaceRect.left + workspace.scrollLeft,
       y:
-        sourceRect.top +
-        sourceRect.height / 2 -
+        selectionRect.top +
+        selectionRect.height / 2 -
         workspaceRect.top +
         workspace.scrollTop,
     };
+    const visibleTop =
+      Math.max(workspace.scrollTop, -workspaceRect.top) +
+      branchCardViewportOffset;
+    const visibleBottom =
+      Math.max(workspace.scrollTop, -workspaceRect.top) +
+      Math.min(window.innerHeight, workspaceRect.bottom) -
+      branchCardViewportOffset;
+    const branchCardHeight = Math.min(
+      branchCardMaxVisibleHeight,
+      Math.max(320, window.innerHeight - 180),
+    );
+    const preferredY = anchor.y - 42;
+    const maxVisibleY = Math.max(visibleTop, visibleBottom - branchCardHeight);
     const position = {
       x: anchor.x + 48,
-      y: Math.max(anchor.y - 42, 8),
+      y: clamp(preferredY, visibleTop, maxVisibleY),
     };
 
     setBranches((current) => [
@@ -359,6 +384,7 @@ function App() {
         sourceMessageId: contextMenu.target.messageId,
         sourceText: contextMenu.target.text,
         anchor,
+        anchorSource: "selection",
         position,
         messages: [],
         draft: "",
@@ -394,6 +420,11 @@ function App() {
       return;
     }
 
+    const selectionRect = range.getBoundingClientRect();
+    if (selectionRect.width === 0 && selectionRect.height === 0) {
+      return;
+    }
+
     event.preventDefault();
     setContextMenu({
       x: event.clientX,
@@ -402,6 +433,7 @@ function App() {
         messageId,
         text: selectedText,
         sourceRect: sourceElement.getBoundingClientRect(),
+        selectionRect,
       },
     });
   }
