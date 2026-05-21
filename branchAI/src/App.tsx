@@ -417,7 +417,7 @@ function App() {
       <header className="app-header">
         <div>
           <p className="eyebrow">BranchAI</p>
-          <h1>Gemini chat shell</h1>
+          <h1>Branching Gemini</h1>
         </div>
         <button type="button" className="ghost-button" onClick={clearChat}>
           Clear
