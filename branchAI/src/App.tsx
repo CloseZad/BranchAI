@@ -1,4 +1,11 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { FormEvent, MouseEvent, ReactNode } from "react";
 import "./App.css";
 
@@ -82,6 +89,33 @@ function App() {
 
   const visibleHistory = useMemo(() => toChatHistory(messages), [messages]);
 
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
+        return;
+      }
+
+      const target = event.target;
+      if (!(target instanceof HTMLTextAreaElement)) {
+        return;
+      }
+
+      const form = target.form;
+      if (!form) {
+        return;
+      }
+
+      event.preventDefault();
+      form.requestSubmit();
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, []);
+
   const registerMessageElement = useCallback(
     (messageId: string, element: HTMLElement | null) => {
       if (element) {
@@ -164,7 +198,6 @@ function App() {
 
   async function sendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-
     const text = draft.trim();
     if (!text || isSending) {
       return;
