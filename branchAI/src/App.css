@@ -12,13 +12,27 @@
   --accent-deep: #00986f;
   --danger: #c83c43;
   --shadow: rgba(0, 0, 0, 0.42);
-  min-height: 100svh;
+  height: 100svh;
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-columns: minmax(360px, 430px) minmax(0, 1fr);
   background:
     radial-gradient(circle at 50% 20%, rgba(0, 201, 139, 0.06), transparent 32%),
     var(--bg);
   color: var(--text);
+  overflow: hidden;
+}
+
+.chat-rail {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  border-right: 1px solid #1a1b1f;
+  background: rgba(8, 9, 10, 0.96);
+  box-shadow: 18px 0 48px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+  z-index: 4;
 }
 
 .app-header {
@@ -26,7 +40,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 24px;
-  padding: 18px clamp(18px, 4vw, 56px);
+  padding: 18px 20px;
   border-bottom: 1px solid #1a1b1f;
   background: rgba(8, 9, 10, 0.94);
   backdrop-filter: blur(16px);
@@ -77,29 +91,92 @@
 
 .workspace {
   position: relative;
-  min-height: 480px;
-  overflow-x: auto;
-  overflow-y: visible;
-  padding-bottom: 32px;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.workspace-surface {
+  position: relative;
+  min-width: 100%;
+  min-height: 100%;
+}
+
+.workspace-canvas {
+  position: relative;
+  transform-origin: 0 0;
+}
+
+.workspace-tools {
+  position: sticky;
+  top: 16px;
+  left: 16px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 16px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(15, 16, 18, 0.88);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.24);
+  backdrop-filter: blur(12px);
+}
+
+.workspace-tools button {
+  min-width: 36px;
+  height: 32px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.workspace-tools button:nth-child(2) {
+  min-width: 58px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.workspace-tools button:hover:not(:disabled) {
+  border-color: rgba(0, 201, 139, 0.36);
+  background: rgba(0, 201, 139, 0.1);
+  color: var(--accent);
+}
+
+.workspace-tools button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
 }
 
 .conversation {
-  width: min(760px, calc(100vw - 32px));
-  margin: 0 auto;
-  padding: 44px 0;
   display: flex;
-  flex-direction: column;
-  gap: 16px;
-  transition: margin 180ms ease;
+  min-height: 0;
+  overflow: hidden;
 }
 
-.conversation.has-branches {
-  margin-left: clamp(16px, 6vw, 72px);
-  margin-right: 0;
+.conversation-scroll {
+  flex: 1;
+  min-height: 0;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .empty-state {
-  min-height: 340px;
+  min-height: 260px;
   display: grid;
   place-items: center;
   border: 1px solid var(--border);
@@ -112,7 +189,7 @@
 
 .empty-state p {
   margin: 0;
-  font-size: clamp(24px, 4vw, 34px);
+  font-size: clamp(22px, 3vw, 30px);
   font-weight: 800;
   color: var(--text);
 }
@@ -302,20 +379,40 @@
   position: absolute;
   inset: 0;
   z-index: 1;
-  width: 1800px;
-  min-width: 100%;
-  height: 100%;
   pointer-events: none;
+  overflow: visible;
 }
 
 .branch-arrows path {
   fill: none;
   stroke: rgba(0, 201, 139, 0.8);
   stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.branch-arrow-origin {
+  fill: var(--accent);
+  opacity: 0.7;
 }
 
 .branch-arrows marker path {
   fill: var(--accent);
+}
+
+.workspace-empty {
+  position: sticky;
+  top: 24px;
+  left: 24px;
+  display: inline-flex;
+  max-width: 320px;
+  margin: 24px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(15, 16, 18, 0.82);
+  color: var(--muted);
+  font-size: 14px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.24);
 }
 
 .branch-menu {
@@ -342,10 +439,8 @@
 }
 
 .composer {
-  position: sticky;
-  bottom: 0;
   z-index: 3;
-  padding: 18px clamp(18px, 4vw, 56px) 24px;
+  padding: 14px 20px 18px;
   border-top: 1px solid #1a1b1f;
   background: rgba(8, 9, 10, 0.96);
   backdrop-filter: blur(16px);
@@ -354,9 +449,8 @@
 }
 
 .composer textarea {
-  width: min(880px, 100%);
-  min-height: 110px;
-  margin: 0 auto;
+  width: 100%;
+  min-height: 96px;
   resize: vertical;
   box-sizing: border-box;
   border: 1px solid var(--border-strong);
@@ -384,8 +478,7 @@
 }
 
 .composer-actions {
-  width: min(880px, 100%);
-  margin: 0 auto;
+  width: 100%;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -415,23 +508,53 @@
 }
 
 .error {
-  width: min(880px, 100%);
-  margin: 0 auto;
+  width: 100%;
+  margin: 0;
   color: var(--danger);
   font-size: 14px;
   text-align: left;
 }
 
-@media (max-width: 640px) {
+@media (max-width: 820px) {
+  .chat-shell {
+    height: auto;
+    min-height: 100svh;
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) auto;
+    overflow: visible;
+  }
+
+  .chat-rail {
+    min-height: 100svh;
+    border-right: 0;
+    border-bottom: 1px solid #1a1b1f;
+  }
+
+  .workspace {
+    min-height: 360px;
+    overflow-x: hidden;
+    overflow-y: visible;
+  }
+
+  .workspace-surface,
+  .workspace-canvas {
+    width: auto !important;
+    height: auto !important;
+    transform: none !important;
+  }
+
+  .workspace-tools {
+    display: none;
+  }
+
   .app-header {
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .conversation {
-    width: calc(100vw - 32px);
-    margin-left: 16px;
-    margin-right: 16px;
+  .conversation-scroll {
+    height: auto;
+    min-height: 0;
   }
 
   .branch-card {
