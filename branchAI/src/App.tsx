@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { FormEvent, MouseEvent, ReactNode } from "react";
+import type { FormEvent, MouseEvent, ReactNode, WheelEvent } from "react";
 import "./App.css";
 
 type Role = "user" | "model";
@@ -48,6 +48,17 @@ type Point = {
   y: number;
 };
 
+type MeasuredRect = Point & {
+  width: number;
+  height: number;
+};
+
+type ArrowLayout = {
+  width: number;
+  height: number;
+  branchRects: Record<string, MeasuredRect>;
+};
+
 type ChatResponse = {
   text?: string;
   error?: string;
@@ -59,6 +70,10 @@ const chatApiUrl =
   import.meta.env.VITE_CHAT_API_URL ?? `${apiBaseUrl}/api/chat`;
 const branchCardViewportOffset = 18;
 const branchCardMaxVisibleHeight = 520;
+const branchCardWidth = 360;
+const minBranchZoom = 0.5;
+const maxBranchZoom = 1.25;
+const branchZoomStep = 0.1;
 
 function makeId() {
   return crypto.randomUUID();
@@ -75,6 +90,63 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
 
+function roundZoom(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+function arrowLayoutsMatch(first: ArrowLayout, second: ArrowLayout) {
+  if (first.width !== second.width || first.height !== second.height) {
+    return false;
+  }
+
+  const firstKeys = Object.keys(first.branchRects);
+  const secondKeys = Object.keys(second.branchRects);
+  if (firstKeys.length !== secondKeys.length) {
+    return false;
+  }
+
+  return firstKeys.every((key) => {
+    const firstRect = first.branchRects[key];
+    const secondRect = second.branchRects[key];
+    return (
+      secondRect &&
+      firstRect.x === secondRect.x &&
+      firstRect.y === secondRect.y &&
+      firstRect.width === secondRect.width &&
+      firstRect.height === secondRect.height
+    );
+  });
+}
+
+function getBranchArrowPath(branch: Branch, rect?: MeasuredRect) {
+  const fallbackRect = {
+    x: branch.position.x,
+    y: branch.position.y,
+    width: branchCardWidth,
+    height: branchCardMaxVisibleHeight,
+  };
+  const branchRect = rect ?? fallbackRect;
+  const start = {
+    x: Math.max(0, branch.anchor.x),
+    y: branch.anchor.y,
+  };
+  const connectsToLeft = start.x <= branchRect.x + branchRect.width / 2;
+  const target = {
+    x: connectsToLeft ? branchRect.x : branchRect.x + branchRect.width,
+    y: clamp(start.y, branchRect.y + 32, branchRect.y + branchRect.height - 32),
+  };
+  const direction = target.x >= start.x ? 1 : -1;
+  const curve = clamp(Math.abs(target.x - start.x) * 0.45, 48, 220);
+
+  return {
+    start,
+    target,
+    path: `M ${start.x} ${start.y} C ${start.x + direction * curve} ${
+      start.y
+    }, ${target.x - direction * curve} ${target.y}, ${target.x} ${target.y}`,
+  };
+}
+
 function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -83,9 +155,17 @@ function App() {
   const [isSending, setIsSending] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null);
   const [draggingBranchId, setDraggingBranchId] = useState<string | null>(null);
+  const [branchZoom, setBranchZoom] = useState(1);
+  const [arrowLayout, setArrowLayout] = useState<ArrowLayout>({
+    width: 0,
+    height: 0,
+    branchRects: {},
+  });
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
+  const conversationScrollRef = useRef<HTMLDivElement>(null);
   const messageElementsRef = useRef(new Map<string, HTMLElement>());
+  const branchElementsRef = useRef(new Map<string, HTMLElement>());
 
   const visibleHistory = useMemo(() => toChatHistory(messages), [messages]);
 
@@ -128,27 +208,47 @@ function App() {
     [],
   );
 
-  const measureMessageAnchor = useCallback((messageId: string) => {
+  const registerBranchElement = useCallback(
+    (branchId: string, element: HTMLElement | null) => {
+      if (element) {
+        branchElementsRef.current.set(branchId, element);
+        return;
+      }
+
+      branchElementsRef.current.delete(branchId);
+    },
+    [],
+  );
+
+  const measureBranchAnchor = useCallback((branch: Branch) => {
     const workspace = workspaceRef.current;
-    const messageElement = messageElementsRef.current.get(messageId);
+    const messageElement = messageElementsRef.current.get(branch.sourceMessageId);
     if (!workspace || !messageElement) {
       return null;
     }
 
     const workspaceRect = workspace.getBoundingClientRect();
-    const messageRect = messageElement.getBoundingClientRect();
+    const highlightElement = Array.from(
+      messageElement.querySelectorAll<HTMLElement>(".branch-highlight"),
+    ).find((element) => element.textContent === branch.sourceText);
+    const anchorRect =
+      highlightElement?.getBoundingClientRect() ??
+      messageElement.getBoundingClientRect();
 
     return {
-      x: messageRect.right - workspaceRect.left + workspace.scrollLeft,
+      x:
+        (anchorRect.right - workspaceRect.left + workspace.scrollLeft) /
+        branchZoom,
       y:
-        messageRect.top +
-        messageRect.height / 2 -
-        workspaceRect.top +
-        workspace.scrollTop,
+        (anchorRect.top +
+          anchorRect.height / 2 -
+          workspaceRect.top +
+          workspace.scrollTop) /
+        branchZoom,
     };
-  }, []);
+  }, [branchZoom]);
 
-  useLayoutEffect(() => {
+  const refreshBranchAnchors = useCallback(() => {
     if (!workspaceRef.current) {
       return;
     }
@@ -157,11 +257,7 @@ function App() {
       let changed = false;
 
       const nextBranches = current.map((branch) => {
-        if (branch.anchorSource === "selection") {
-          return branch;
-        }
-
-        const anchor = measureMessageAnchor(branch.sourceMessageId);
+        const anchor = measureBranchAnchor(branch);
         if (
           !anchor ||
           (Math.abs(anchor.x - branch.anchor.x) < 0.5 &&
@@ -176,7 +272,144 @@ function App() {
 
       return changed ? nextBranches : current;
     });
-  }, [branches, measureMessageAnchor]);
+  }, [measureBranchAnchor]);
+
+  const measureArrowLayout = useCallback(() => {
+    const workspace = workspaceRef.current;
+    if (!workspace) {
+      return;
+    }
+
+    const nextBranchRects: Record<string, MeasuredRect> = {};
+    let width = workspace.clientWidth / branchZoom;
+    let height = workspace.clientHeight / branchZoom;
+
+    branches.forEach((branch) => {
+      const element = branchElementsRef.current.get(branch.id);
+      if (!element) {
+        width = Math.max(width, branch.position.x + branchCardWidth + 80);
+        height = Math.max(
+          height,
+          branch.position.y + branchCardMaxVisibleHeight + 80,
+        );
+        return;
+      }
+
+      const measuredRect = {
+        x: branch.position.x,
+        y: branch.position.y,
+        width: element.offsetWidth,
+        height: element.offsetHeight,
+      };
+
+      nextBranchRects[branch.id] = measuredRect;
+      width = Math.max(width, measuredRect.x + measuredRect.width + 80);
+      height = Math.max(height, measuredRect.y + measuredRect.height + 80);
+    });
+
+    const nextLayout = {
+      width: Math.ceil(width),
+      height: Math.ceil(height),
+      branchRects: nextBranchRects,
+    };
+
+    setArrowLayout((current) =>
+      arrowLayoutsMatch(current, nextLayout) ? current : nextLayout,
+    );
+  }, [branches, branchZoom]);
+
+  useLayoutEffect(() => {
+    refreshBranchAnchors();
+    measureArrowLayout();
+  }, [branches, refreshBranchAnchors, measureArrowLayout]);
+
+  function updateBranchZoom(nextZoom: number, focusPoint?: Point) {
+    const workspace = workspaceRef.current;
+    const clampedZoom = roundZoom(
+      clamp(nextZoom, minBranchZoom, maxBranchZoom),
+    );
+
+    if (!workspace) {
+      setBranchZoom(clampedZoom);
+      return;
+    }
+
+    const viewportFocus = focusPoint ?? {
+      x: workspace.clientWidth / 2,
+      y: workspace.clientHeight / 2,
+    };
+    const canvasFocus = {
+      x: (workspace.scrollLeft + viewportFocus.x) / branchZoom,
+      y: (workspace.scrollTop + viewportFocus.y) / branchZoom,
+    };
+
+    setBranchZoom(clampedZoom);
+
+    requestAnimationFrame(() => {
+      workspace.scrollLeft = canvasFocus.x * clampedZoom - viewportFocus.x;
+      workspace.scrollTop = canvasFocus.y * clampedZoom - viewportFocus.y;
+    });
+  }
+
+  function zoomInBranches() {
+    updateBranchZoom(branchZoom + branchZoomStep);
+  }
+
+  function zoomOutBranches() {
+    updateBranchZoom(branchZoom - branchZoomStep);
+  }
+
+  function resetBranchZoom() {
+    updateBranchZoom(1);
+  }
+
+  function handleWorkspaceWheel(event: WheelEvent<HTMLDivElement>) {
+    if (!event.ctrlKey && !event.metaKey) {
+      return;
+    }
+
+    event.preventDefault();
+    const workspace = workspaceRef.current;
+    if (!workspace) {
+      return;
+    }
+
+    const workspaceRect = workspace.getBoundingClientRect();
+    const direction = event.deltaY > 0 ? -1 : 1;
+
+    updateBranchZoom(branchZoom + direction * branchZoomStep, {
+      x: event.clientX - workspaceRect.left,
+      y: event.clientY - workspaceRect.top,
+    });
+  }
+
+  useLayoutEffect(() => {
+    const workspace = workspaceRef.current;
+    const conversationScroll = conversationScrollRef.current;
+    if (!workspace) {
+      return;
+    }
+
+    const handleLayoutChange = () => {
+      refreshBranchAnchors();
+      measureArrowLayout();
+    };
+
+    const resizeObserver = new ResizeObserver(handleLayoutChange);
+    resizeObserver.observe(workspace);
+    branchElementsRef.current.forEach((element) => {
+      resizeObserver.observe(element);
+    });
+
+    conversationScroll?.addEventListener("scroll", handleLayoutChange);
+    window.addEventListener("resize", handleLayoutChange);
+
+    return () => {
+      resizeObserver.disconnect();
+      conversationScroll?.removeEventListener("scroll", handleLayoutChange);
+      window.removeEventListener("resize", handleLayoutChange);
+    };
+  }, [branches, refreshBranchAnchors, measureArrowLayout]);
 
   async function requestGemini(
     message: string,
@@ -351,18 +584,20 @@ function App() {
     const workspaceRect = workspaceRef.current.getBoundingClientRect();
 
     function handlePointerMove(pointerEvent: globalThis.MouseEvent) {
-      const nextX = startPosition.x + pointerEvent.clientX - startX;
-      const nextY = startPosition.y + pointerEvent.clientY - startY;
-
       moveBranch(branchId, {
         x: Math.max(
           8,
           Math.min(
-            nextX,
-            workspaceRect.width + workspaceRef.current!.scrollLeft - 380,
+            startPosition.x + (pointerEvent.clientX - startX) / branchZoom,
+            (workspaceRect.width + workspaceRef.current!.scrollLeft) /
+              branchZoom -
+              branchCardWidth,
           ),
         ),
-        y: Math.max(8, nextY),
+        y: Math.max(
+          8,
+          startPosition.y + (pointerEvent.clientY - startY) / branchZoom,
+        ),
       });
     }
 
@@ -385,20 +620,25 @@ function App() {
     const workspaceRect = workspace.getBoundingClientRect();
     const selectionRect = contextMenu.target.selectionRect;
     const anchor = {
-      x: selectionRect.right - workspaceRect.left + workspace.scrollLeft,
+      x:
+        (selectionRect.right - workspaceRect.left + workspace.scrollLeft) /
+        branchZoom,
       y:
-        selectionRect.top +
-        selectionRect.height / 2 -
-        workspaceRect.top +
-        workspace.scrollTop,
+        (selectionRect.top +
+          selectionRect.height / 2 -
+          workspaceRect.top +
+          workspace.scrollTop) /
+        branchZoom,
     };
     const visibleTop =
-      Math.max(workspace.scrollTop, -workspaceRect.top) +
-      branchCardViewportOffset;
+      (Math.max(workspace.scrollTop, -workspaceRect.top) +
+        branchCardViewportOffset) /
+      branchZoom;
     const visibleBottom =
-      Math.max(workspace.scrollTop, -workspaceRect.top) +
-      Math.min(window.innerHeight, workspaceRect.bottom) -
-      branchCardViewportOffset;
+      (Math.max(workspace.scrollTop, -workspaceRect.top) +
+        Math.min(window.innerHeight, workspaceRect.bottom) -
+        branchCardViewportOffset) /
+      branchZoom;
     const branchCardHeight = Math.min(
       branchCardMaxVisibleHeight,
       Math.max(320, window.innerHeight - 180),
@@ -406,7 +646,7 @@ function App() {
     const preferredY = anchor.y - 42;
     const maxVisibleY = Math.max(visibleTop, visibleBottom - branchCardHeight);
     const position = {
-      x: anchor.x + 48,
+      x: Math.max(32, anchor.x + 48),
       y: clamp(preferredY, visibleTop, maxVisibleY),
     };
 
@@ -479,84 +719,167 @@ function App() {
 
   return (
     <main className="chat-shell" onClick={() => setContextMenu(null)}>
-      <header className="app-header">
-        <div>
-          <p className="eyebrow">BranchAI</p>
-          <h1>Branching Gemini</h1>
-        </div>
-        <button type="button" className="ghost-button" onClick={clearChat}>
-          Clear
-        </button>
-      </header>
+      <aside className="chat-rail">
+        <header className="app-header">
+          <div>
+            <p className="eyebrow">BranchAI</p>
+            <h1>Branching Gemini</h1>
+          </div>
+          <button type="button" className="ghost-button" onClick={clearChat}>
+            Clear
+          </button>
+        </header>
 
-      <div className="workspace" ref={workspaceRef}>
-        <section
-          className={`conversation ${branches.length > 0 ? "has-branches" : ""}`}
-          aria-live="polite"
-        >
-          {messages.length === 0 ? (
-            <div className="empty-state">
-              <p>{starterPrompt}</p>
-            </div>
-          ) : (
-            messages.map((message) => (
-              <ChatMessage
-                key={message.id}
-                message={message}
-                highlights={highlightsFor(message.id)}
-                onContextMenu={handleMessageContextMenu}
-                onMessageElement={registerMessageElement}
-              />
-            ))
-          )}
-          {isSending && (
-            <article className="message model pending">
-              <div className="message-meta">Gemini</div>
-              <p>Thinking...</p>
-            </article>
-          )}
+        <section className="conversation" aria-live="polite">
+          <div className="conversation-scroll" ref={conversationScrollRef}>
+            {messages.length === 0 ? (
+              <div className="empty-state">
+                <p>{starterPrompt}</p>
+              </div>
+            ) : (
+              messages.map((message) => (
+                <ChatMessage
+                  key={message.id}
+                  message={message}
+                  highlights={highlightsFor(message.id)}
+                  onContextMenu={handleMessageContextMenu}
+                  onMessageElement={registerMessageElement}
+                />
+              ))
+            )}
+            {isSending && (
+              <article className="message model pending">
+                <div className="message-meta">Gemini</div>
+                <p>Thinking...</p>
+              </article>
+            )}
+          </div>
         </section>
 
-        {branches.map((branch) => (
-          <BranchCard
-            branch={branch}
-            isDragging={draggingBranchId === branch.id}
-            key={branch.id}
-            onClose={closeBranch}
-            onDraftChange={updateBranchDraft}
-            onDragStart={startBranchDrag}
-            onSubmit={sendBranchMessage}
-            onContextMenu={handleMessageContextMenu}
-            highlightsFor={highlightsFor}
-            onMessageElement={registerMessageElement}
+        <form className="composer" onSubmit={sendMessage}>
+          {error && <p className="error">{error}</p>}
+          <textarea
+            ref={inputRef}
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder="Send a prompt to Gemini"
+            rows={4}
           />
-        ))}
+          <div className="composer-actions">
+            <span>{messages.length} saved turns</span>
+            <button type="submit" disabled={!draft.trim() || isSending}>
+              {isSending ? "Sending" : "Send"}
+            </button>
+          </div>
+        </form>
+      </aside>
 
-        <svg className="branch-arrows" aria-hidden="true">
-          <defs>
-            <marker
-              id="arrowhead"
-              markerHeight="8"
-              markerWidth="8"
-              orient="auto"
-              refX="7"
-              refY="4"
+      <div className="workspace" ref={workspaceRef} onWheel={handleWorkspaceWheel}>
+        <div
+          className="workspace-tools"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            aria-label="Zoom out branches"
+            onClick={zoomOutBranches}
+            disabled={branchZoom <= minBranchZoom}
+          >
+            -
+          </button>
+          <button type="button" onClick={resetBranchZoom}>
+            {Math.round(branchZoom * 100)}%
+          </button>
+          <button
+            type="button"
+            aria-label="Zoom in branches"
+            onClick={zoomInBranches}
+            disabled={branchZoom >= maxBranchZoom}
+          >
+            +
+          </button>
+        </div>
+
+        {branches.length === 0 && (
+          <div className="workspace-empty">
+            Highlight text in the chat rail and branch from it.
+          </div>
+        )}
+
+        <div
+          className="workspace-surface"
+          style={{
+            width: Math.max(arrowLayout.width * branchZoom, 1),
+            height: Math.max(arrowLayout.height * branchZoom, 1),
+          }}
+        >
+          <div
+            className="workspace-canvas"
+            style={{
+              width: Math.max(arrowLayout.width, 1),
+              height: Math.max(arrowLayout.height, 1),
+              transform: `scale(${branchZoom})`,
+            }}
+          >
+            {branches.map((branch) => (
+              <BranchCard
+                branch={branch}
+                isDragging={draggingBranchId === branch.id}
+                key={branch.id}
+                onClose={closeBranch}
+                onDraftChange={updateBranchDraft}
+                onDragStart={startBranchDrag}
+                onSubmit={sendBranchMessage}
+                onContextMenu={handleMessageContextMenu}
+                highlightsFor={highlightsFor}
+                onMessageElement={registerMessageElement}
+                onBranchElement={registerBranchElement}
+              />
+            ))}
+
+            <svg
+              className="branch-arrows"
+              aria-hidden="true"
+              width={Math.max(1, arrowLayout.width)}
+              height={Math.max(1, arrowLayout.height)}
+              viewBox={`0 0 ${Math.max(1, arrowLayout.width)} ${Math.max(
+                1,
+                arrowLayout.height,
+              )}`}
             >
-              <path d="M0,0 L8,4 L0,8 Z" />
-            </marker>
-          </defs>
-          {branches.map((branch) => (
-            <path
-              d={`M ${branch.anchor.x} ${branch.anchor.y} C ${branch.anchor.x + 24} ${
-                branch.anchor.y
-              }, ${branch.position.x - 28} ${branch.position.y + 28}, ${
-                branch.position.x - 6
-              } ${branch.position.y + 28}`}
-              key={branch.id}
-              markerEnd="url(#arrowhead)"
-            />
-          ))}
-        </svg>
+              <defs>
+                <marker
+                  id="arrowhead"
+                  markerHeight="8"
+                  markerWidth="8"
+                  orient="auto"
+                  refX="7"
+                  refY="4"
+                >
+                  <path d="M0,0 L8,4 L0,8 Z" />
+                </marker>
+              </defs>
+              {branches.map((branch) => {
+                const arrow = getBranchArrowPath(
+                  branch,
+                  arrowLayout.branchRects[branch.id],
+                );
+
+                return (
+                  <g key={branch.id}>
+                    <circle
+                      className="branch-arrow-origin"
+                      cx={arrow.start.x}
+                      cy={arrow.start.y}
+                      r="3"
+                    />
+                    <path d={arrow.path} markerEnd="url(#arrowhead)" />
+                  </g>
+                );
+              })}
+            </svg>
+          </div>
+        </div>
 
         {contextMenu && (
           <div
@@ -570,23 +893,6 @@ function App() {
           </div>
         )}
       </div>
-
-      <form className="composer" onSubmit={sendMessage}>
-        {error && <p className="error">{error}</p>}
-        <textarea
-          ref={inputRef}
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          placeholder="Send a prompt to Gemini"
-          rows={4}
-        />
-        <div className="composer-actions">
-          <span>{messages.length} saved turns</span>
-          <button type="submit" disabled={!draft.trim() || isSending}>
-            {isSending ? "Sending" : "Send"}
-          </button>
-        </div>
-      </form>
     </main>
   );
 }
@@ -626,6 +932,7 @@ function BranchCard({
   onContextMenu,
   highlightsFor,
   onMessageElement,
+  onBranchElement,
 }: {
   branch: Branch;
   isDragging: boolean;
@@ -636,10 +943,12 @@ function BranchCard({
   onContextMenu: (event: MouseEvent<HTMLElement>, messageId: string) => void;
   highlightsFor: (messageId: string) => string[];
   onMessageElement: (messageId: string, element: HTMLElement | null) => void;
+  onBranchElement: (branchId: string, element: HTMLElement | null) => void;
 }) {
   return (
     <aside
       className={`branch-card ${isDragging ? "dragging" : ""}`}
+      ref={(element) => onBranchElement(branch.id, element)}
       style={{ left: branch.position.x, top: branch.position.y }}
     >
       <header
