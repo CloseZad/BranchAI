@@ -6,7 +6,9 @@ import {
   useRef,
   useState,
 } from "react";
-import type { FormEvent, MouseEvent, ReactNode, WheelEvent } from "react";
+import type { FormEvent, MouseEvent, WheelEvent } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import "./App.css";
 
 type Role = "user" | "model";
@@ -63,6 +65,25 @@ type ChatResponse = {
   text?: string;
   error?: string;
 };
+
+type HastText = {
+  type: "text";
+  value: string;
+};
+
+type HastElement = {
+  type: "element";
+  tagName: string;
+  properties?: Record<string, unknown>;
+  children?: HastNode[];
+};
+
+type HastRoot = {
+  type: "root";
+  children: HastNode[];
+};
+
+type HastNode = HastRoot | HastElement | HastText;
 
 const starterPrompt = "Ask Gemini something.";
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "";
@@ -144,6 +165,76 @@ function getBranchArrowPath(branch: Branch, rect?: MeasuredRect) {
     path: `M ${start.x} ${start.y} C ${start.x + direction * curve} ${
       start.y
     }, ${target.x - direction * curve} ${target.y}, ${target.x} ${target.y}`,
+  };
+}
+
+function renderHighlightedNodes(text: string, highlights: string[]): HastNode[] {
+  const ranges = highlights
+    .map((highlight) => {
+      const start = text.indexOf(highlight);
+      return start >= 0 ? { start, end: start + highlight.length } : null;
+    })
+    .filter((range): range is { start: number; end: number } => range !== null)
+    .sort((first, second) => first.start - second.start);
+
+  if (ranges.length === 0) {
+    return [{ type: "text", value: text }];
+  }
+
+  const nodes: HastNode[] = [];
+  let cursor = 0;
+
+  ranges.forEach((range) => {
+    if (range.start < cursor) {
+      return;
+    }
+
+    if (range.start > cursor) {
+      nodes.push({ type: "text", value: text.slice(cursor, range.start) });
+    }
+
+    nodes.push({
+      type: "element",
+      tagName: "mark",
+      properties: { className: "branch-highlight" },
+      children: [{ type: "text", value: text.slice(range.start, range.end) }],
+    });
+    cursor = range.end;
+  });
+
+  if (cursor < text.length) {
+    nodes.push({ type: "text", value: text.slice(cursor) });
+  }
+
+  return nodes;
+}
+
+function createHighlightPlugin(highlights: string[]) {
+  const activeHighlights = highlights.filter(Boolean);
+
+  return function highlightPlugin() {
+    return function transform(tree: HastNode) {
+      if (activeHighlights.length === 0) {
+        return;
+      }
+
+      function visit(node: HastNode) {
+        if (!("children" in node) || !node.children) {
+          return;
+        }
+
+        node.children = node.children.flatMap((child) => {
+          if (child.type === "text") {
+            return renderHighlightedNodes(child.value, activeHighlights);
+          }
+
+          visit(child);
+          return [child];
+        });
+      }
+
+      visit(tree);
+    };
   };
 }
 
@@ -908,6 +999,11 @@ function ChatMessage({
   onContextMenu: (event: MouseEvent<HTMLElement>, messageId: string) => void;
   onMessageElement: (messageId: string, element: HTMLElement | null) => void;
 }) {
+  const highlightPlugin = useMemo(
+    () => createHighlightPlugin(highlights),
+    [highlights],
+  );
+
   return (
     <article
       className={`message ${message.role}`}
@@ -917,7 +1013,14 @@ function ChatMessage({
       <div className="message-meta">
         {message.role === "user" ? "You" : "Gemini"}
       </div>
-      <p>{renderHighlightedText(message.text, highlights)}</p>
+      <div className="message-content">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[highlightPlugin]}
+        >
+          {message.text}
+        </ReactMarkdown>
+      </div>
     </article>
   );
 }
@@ -1013,46 +1116,6 @@ function BranchCard({
       </form>
     </aside>
   );
-}
-
-function renderHighlightedText(text: string, highlights: string[]) {
-  const ranges = highlights
-    .map((highlight) => {
-      const start = text.indexOf(highlight);
-      return start >= 0 ? { start, end: start + highlight.length } : null;
-    })
-    .filter((range): range is { start: number; end: number } => range !== null)
-    .sort((first, second) => first.start - second.start);
-
-  if (ranges.length === 0) {
-    return text;
-  }
-
-  const nodes: ReactNode[] = [];
-  let cursor = 0;
-
-  ranges.forEach((range, index) => {
-    if (range.start < cursor) {
-      return;
-    }
-
-    if (range.start > cursor) {
-      nodes.push(text.slice(cursor, range.start));
-    }
-
-    nodes.push(
-      <mark className="branch-highlight" key={`${range.start}-${index}`}>
-        {text.slice(range.start, range.end)}
-      </mark>,
-    );
-    cursor = range.end;
-  });
-
-  if (cursor < text.length) {
-    nodes.push(text.slice(cursor));
-  }
-
-  return nodes;
 }
 
 export default App;
