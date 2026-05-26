@@ -8,7 +8,10 @@ import {
 } from "react";
 import type { FormEvent, MouseEvent, WheelEvent } from "react";
 import ReactMarkdown from "react-markdown";
+import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import "katex/dist/katex.min.css";
 import "./App.css";
 
 type Role = "user" | "model";
@@ -209,6 +212,16 @@ function renderHighlightedNodes(text: string, highlights: string[]): HastNode[] 
   return nodes;
 }
 
+function hasClassName(node: HastElement, className: string) {
+  const value = node.properties?.className;
+
+  if (typeof value === "string") {
+    return value.split(" ").includes(className);
+  }
+
+  return Array.isArray(value) && value.includes(className);
+}
+
 function createHighlightPlugin(highlights: string[]) {
   const activeHighlights = highlights.filter(Boolean);
 
@@ -224,6 +237,10 @@ function createHighlightPlugin(highlights: string[]) {
         }
 
         node.children = node.children.flatMap((child) => {
+          if (child.type === "element" && hasClassName(child, "katex")) {
+            return [child];
+          }
+
           if (child.type === "text") {
             return renderHighlightedNodes(child.value, activeHighlights);
           }
@@ -1015,8 +1032,8 @@ function ChatMessage({
       </div>
       <div className="message-content">
         <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          rehypePlugins={[highlightPlugin]}
+          remarkPlugins={[remarkGfm, remarkMath]}
+          rehypePlugins={[rehypeKatex, highlightPlugin]}
         >
           {message.text}
         </ReactMarkdown>

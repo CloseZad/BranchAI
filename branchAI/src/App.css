@@ -353,6 +353,23 @@
   background: var(--border);
 }
 
+.message-content .katex {
+  color: inherit;
+  font-size: 1.05em;
+}
+
+.message-content .katex-display {
+  margin: 12px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 4px 0;
+}
+
+.message-content .katex-display > .katex {
+  display: inline-block;
+  max-width: 100%;
+}
+
 .branch-highlight {
   border-radius: 4px;
   background: rgba(0, 201, 139, 0.24);
